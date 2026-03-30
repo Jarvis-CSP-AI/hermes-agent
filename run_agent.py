@@ -109,6 +109,8 @@ HONCHO_TOOL_NAMES = {
     "honcho_conclude",
 }
 
+_JARVIS_CORE_SRC = Path.home() / "Development" / "jarvis-core" / "src"
+
 
 class _SafeWriter:
     """Transparent stdio wrapper that catches OSError/ValueError from broken pipes.
@@ -494,6 +496,8 @@ class AIAgent:
         self.background_review_callback = None  # Optional sync callback for gateway delivery
         self.skip_context_files = skip_context_files
         self.pass_session_id = pass_session_id
+        self._jarvis_pipeline = None
+        self._jarvis_prompt_renderer = None
         self.log_prefix_chars = log_prefix_chars
         self.log_prefix = f"{log_prefix} " if log_prefix else ""
         # Store effective base URL for feature detection (prompt caching, reasoning, etc.)
@@ -2400,6 +2404,104 @@ class AIAgent:
             logger.warning("Honcho sync failed: %s", e)
             if not self.quiet_mode:
                 print(f"  Honcho write failed: {e}")
+
+    def _ensure_jarvis_prompt_pipeline(self):
+        """Best-effort lazy loader for Jarvis v2 retrieval components."""
+        if self._jarvis_pipeline is not None and self._jarvis_prompt_renderer is not None:
+            return True
+
+        try:
+            if str(_JARVIS_CORE_SRC) not in sys.path:
+                sys.path.insert(0, str(_JARVIS_CORE_SRC))
+
+            from jarvis_v2.channel_policy import ChannelPolicyResolver
+            from jarvis_v2.config_loader import load_channel_policy
+            from jarvis_v2.graph_adapter import GraphMemoryAdapter
+            from jarvis_v2.prompt_render import render_prompt_context
+            from jarvis_v2.retrieval_pipeline import RetrievalPipeline
+
+            root = _JARVIS_CORE_SRC.parent
+            private_channel = load_channel_policy(root / "config" / "examples" / "channel-policy.discord.private.json")
+            public_channel = load_channel_policy(root / "config" / "examples" / "channel-policy.discord.public.json")
+            default_channel = load_channel_policy(root / "config" / "examples" / "channel-policy.discord.json")
+            resolver = ChannelPolicyResolver([default_channel, public_channel, private_channel])
+
+            self._jarvis_pipeline = RetrievalPipeline(
+                resolver=resolver,
+                graph_adapter=GraphMemoryAdapter(),
+                local_memory_nodes=[],
+            )
+            self._jarvis_prompt_renderer = render_prompt_context
+            return True
+        except Exception as e:
+            logger.debug("Jarvis prompt pipeline unavailable (non-fatal): %s", e, exc_info=True)
+            self._jarvis_pipeline = False
+            self._jarvis_prompt_renderer = False
+            return False
+
+    def _build_jarvis_turn_context(self, user_message: str) -> str:
+        """Build per-turn Jarvis memory context from graph + session recall.
+
+        This stays out of the cached system prompt on purpose. It is a
+        turn-scoped augmentation built from the current message and gateway
+        session metadata.
+        """
+        if not user_message or not user_message.strip():
+            return ""
+        if not self._ensure_jarvis_prompt_pipeline():
+            return ""
+
+        try:
+            from jarvis_v2.memory_capture import capture_message, render_capture_note
+            from jarvis_v2.models import MessageContext
+            from jarvis_v2.trace_store import append_trace
+
+            platform = os.getenv("HERMES_SESSION_PLATFORM", self.platform or "cli")
+            chat_id = os.getenv("HERMES_SESSION_CHAT_ID", "cli")
+            chat_name = os.getenv("HERMES_SESSION_CHAT_NAME", chat_id)
+            thread_id = os.getenv("HERMES_SESSION_THREAD_ID") or None
+            user_id = os.getenv("HERMES_SESSION_USER_ID", "")
+            user_name = os.getenv("HERMES_SESSION_USER_NAME", "")
+            channel_type = "channel"
+            if thread_id:
+                channel_type = "thread"
+            elif platform == "cli":
+                channel_type = "dm"
+
+            message = MessageContext(
+                text=user_message,
+                platform=platform,
+                channel_id=chat_id,
+                channel_name=chat_name,
+                channel_type=channel_type,
+                user_id=user_id,
+                user_name=user_name,
+                session_id=self.session_id,
+                thread_id=thread_id,
+            )
+            trace = self._jarvis_pipeline.run(message)
+            rendered = self._jarvis_prompt_renderer(trace.prompt_context)
+            capture_note = ""
+            try:
+                capture = capture_message(message)
+                if capture:
+                    capture_note = render_capture_note(capture)
+            except Exception as capture_err:
+                logger.debug("Jarvis explicit memory capture failed (non-fatal): %s", capture_err, exc_info=True)
+            if capture_note:
+                rendered = "\n\n".join(part for part in (rendered, capture_note) if part).strip()
+            try:
+                append_trace(
+                    trace,
+                    rendered_context=rendered,
+                    capture_note=capture_note,
+                )
+            except Exception as trace_err:
+                logger.debug("Jarvis context trace logging failed (non-fatal): %s", trace_err, exc_info=True)
+            return rendered.strip()
+        except Exception as e:
+            logger.debug("Jarvis turn context build failed (non-fatal): %s", e, exc_info=True)
+            return ""
 
     def _build_system_prompt(self, system_message: str = None) -> str:
         """
@@ -5846,6 +5948,7 @@ class AIAgent:
         # to consume background prefetch results from turn N-1.
         self._honcho_context = ""
         self._honcho_turn_context = ""
+        self._jarvis_turn_context = ""
         _recall_mode = (self._honcho_config.recall_mode if self._honcho_config else "hybrid")
         if self._honcho and self._honcho_session_key and _recall_mode != "tools":
             try:
@@ -5857,6 +5960,12 @@ class AIAgent:
                         self._honcho_turn_context = prefetched_context
             except Exception as e:
                 logger.debug("Honcho prefetch failed (non-fatal): %s", e)
+
+        try:
+            self._jarvis_turn_context = self._build_jarvis_turn_context(original_user_message)
+        except Exception as e:
+            logger.debug("Jarvis turn context unavailable (non-fatal): %s", e)
+            self._jarvis_turn_context = ""
 
         # Add user message
         user_msg = {"role": "user", "content": user_message}
@@ -6059,6 +6168,8 @@ class AIAgent:
             effective_system = active_system_prompt or ""
             if self.ephemeral_system_prompt:
                 effective_system = (effective_system + "\n\n" + self.ephemeral_system_prompt).strip()
+            if self._jarvis_turn_context:
+                effective_system = (effective_system + "\n\n" + self._jarvis_turn_context).strip()
             if effective_system:
                 api_messages = [{"role": "system", "content": effective_system}] + api_messages
 

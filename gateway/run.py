@@ -4571,12 +4571,23 @@ class GatewayRunner:
         os.environ["HERMES_SESSION_CHAT_ID"] = context.source.chat_id
         if context.source.chat_name:
             os.environ["HERMES_SESSION_CHAT_NAME"] = context.source.chat_name
+        if context.source.user_id:
+            os.environ["HERMES_SESSION_USER_ID"] = str(context.source.user_id)
+        if context.source.user_name:
+            os.environ["HERMES_SESSION_USER_NAME"] = str(context.source.user_name)
         if context.source.thread_id:
             os.environ["HERMES_SESSION_THREAD_ID"] = str(context.source.thread_id)
     
     def _clear_session_env(self) -> None:
         """Clear session environment variables."""
-        for var in ["HERMES_SESSION_PLATFORM", "HERMES_SESSION_CHAT_ID", "HERMES_SESSION_CHAT_NAME", "HERMES_SESSION_THREAD_ID"]:
+        for var in [
+            "HERMES_SESSION_PLATFORM",
+            "HERMES_SESSION_CHAT_ID",
+            "HERMES_SESSION_CHAT_NAME",
+            "HERMES_SESSION_USER_ID",
+            "HERMES_SESSION_USER_NAME",
+            "HERMES_SESSION_THREAD_ID",
+        ]:
             if var in os.environ:
                 del os.environ[var]
     
@@ -4930,6 +4941,12 @@ class GatewayRunner:
         def progress_callback(tool_name: str, preview: str = None, args: dict = None):
             """Callback invoked by agent when a tool is called."""
             if not progress_queue:
+                return
+
+            # Messaging surfaces get noisy fast if we surface every internal
+            # housekeeping step. Even when tool progress is enabled, suppress
+            # low-value recall/memory chatter and thinking updates.
+            if tool_name in {"_thinking", "session_search", "memory", "todo", "skill_manage"}:
                 return
             
             # "new" mode: only report when tool changes
