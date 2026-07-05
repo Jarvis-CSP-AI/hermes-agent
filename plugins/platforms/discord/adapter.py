@@ -5303,12 +5303,17 @@ class DiscordAdapter(BasePlatformAdapter):
         self, chat_id: str, command: str, session_key: str,
         description: str = "dangerous command",
         metadata: Optional[dict] = None,
+        decomposition: Optional[list] = None,
     ) -> SendResult:
         """
         Send a button-based exec approval prompt for a dangerous command.
 
         The buttons call ``resolve_gateway_approval()`` to unblock the waiting
         agent thread — this replaces the text-based ``/approve`` flow on Discord.
+
+        If *decomposition* is provided (a list of dicts with ``step``,
+        ``command``, and ``summary`` keys), a numbered breakdown is shown
+        below the raw command so the operator can understand each step.
         """
         if not self._client or not DISCORD_AVAILABLE:
             return SendResult(success=False, error="Not connected")
@@ -5332,6 +5337,22 @@ class DiscordAdapter(BasePlatformAdapter):
                 color=discord.Color.orange(),
             )
             embed.add_field(name="Reason", value=description, inline=False)
+
+            # Add step-by-step breakdown if decomposition is available
+            if decomposition:
+                breakdown_lines = []
+                for step in decomposition:
+                    num = step.get("step", "?")
+                    summary = step.get("summary", step.get("command", ""))
+                    line = f"{num}. {summary}"
+                    if step.get("pipe_to_next"):
+                        line += " →"
+                    breakdown_lines.append(line)
+                breakdown_text = "\n".join(breakdown_lines)
+                # Discord field value limit is 1024
+                if len(breakdown_text) > 1020:
+                    breakdown_text = breakdown_text[:1017] + "..."
+                embed.add_field(name="Breakdown", value=breakdown_text, inline=False)
 
             require_admin, admin_user_ids = _resolve_exec_approval_admin_gate(
                 getattr(self.config, "extra", None)

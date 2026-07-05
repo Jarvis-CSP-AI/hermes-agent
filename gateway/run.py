@@ -18100,6 +18100,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
                 cmd = approval_data.get("command", "")
                 desc = approval_data.get("description", "dangerous command")
+                decomposition = approval_data.get("decomposition")
 
                 # Redact credentials from the command before displaying it in
                 # the approval prompt — Tirith's findings are already redacted,
@@ -18121,6 +18122,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                 session_key=_approval_session_key,
                                 description=desc,
                                 metadata=_status_thread_metadata,
+                                decomposition=decomposition,
                             ),
                             _loop_for_step,
                             logger=logger,

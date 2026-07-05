@@ -743,6 +743,262 @@ def _approval_key_aliases(pattern_key: str) -> set[str]:
 # =========================================================================
 # Detection
 # =========================================================================
+# Command decomposition for approval display
+# =========================================================================
+
+# Plain-English summaries for common base commands.
+_COMMAND_SUMMARIES = {
+    "cd": "Change directory to{args}",
+    "ls": "List files{args}",
+    "pwd": "Print working directory",
+    "mkdir": "Create directory{args}",
+    "rmdir": "Remove directory{args}",
+    "cp": "Copy{args}",
+    "mv": "Move/rename{args}",
+    "rm": "Remove{args}",
+    "touch": "Create file{args}",
+    "cat": "Display file{args}",
+    "head": "Show start of file{args}",
+    "tail": "Show end of file{args}",
+    "grep": "Search for{args}",
+    "find": "Find files matching{args}",
+    "sed": "Stream-edit{args}",
+    "awk": "Process text{args}",
+    "sort": "Sort{args}",
+    "uniq": "Filter duplicates{args}",
+    "wc": "Count lines/words/chars{args}",
+    "diff": "Compare files{args}",
+    "chmod": "Change permissions{args}",
+    "chown": "Change ownership{args}",
+    "curl": "Fetch URL{args}",
+    "wget": "Download{args}",
+    "git": "Git:{args}",
+    "docker": "Docker:{args}",
+    "source": "Load shell config{args}",
+    "export": "Set environment variable{args}",
+    "echo": "Print{args}",
+    "which": "Locate command{args}",
+    "type": "Show command type{args}",
+    "pip": "Install/manage Python packages:{args}",
+    "pip3": "Install/manage Python packages:{args}",
+    "python": "Run Python:{args}",
+    "python3": "Run Python:{args}",
+    "node": "Run Node.js:{args}",
+    "npm": "Node package manager:{args}",
+    "npx": "Run Node package:{args}",
+    "yarn": "Node package manager:{args}",
+    "pnpm": "Node package manager:{args}",
+    "cargo": "Rust package manager:{args}",
+    "rustc": "Compile Rust:{args}",
+    "go": "Go:{args}",
+    "make": "Run build{args}",
+    "cmake": "Configure build{args}",
+    "gcc": "Compile C:{args}",
+    "g++": "Compile C++:{args}",
+    "java": "Run Java:{args}",
+    "javac": "Compile Java:{args}",
+    "mvn": "Maven:{args}",
+    "gradle": "Gradle:{args}",
+    "brew": "Homebrew:{args}",
+    "apt": "Package manager:{args}",
+    "apt-get": "Package manager:{args}",
+    "yum": "Package manager:{args}",
+    "dnf": "Package manager:{args}",
+    "systemctl": "System service:{args}",
+    "service": "System service:{args}",
+    "ssh": "SSH to{args}",
+    "scp": "Copy over SSH{args}",
+    "rsync": "Sync files{args}",
+    "tar": "Archive{args}",
+    "zip": "Compress{args}",
+    "unzip": "Extract{args}",
+    "env": "Show/set environment{args}",
+    "printenv": "Print environment variables",
+    "ps": "List processes{args}",
+    "top": "Show running processes",
+    "htop": "Show running processes",
+    "kill": "Terminate process{args}",
+    "killall": "Terminate processes{args}",
+    "df": "Show disk usage{args}",
+    "du": "Show directory size{args}",
+    "free": "Show memory usage{args}",
+    "uname": "Show system info{args}",
+    "hostname": "Show/set hostname{args}",
+    "whoami": "Show current user",
+    "id": "Show user/group IDs{args}",
+    "date": "Show/set date{args}",
+    "sleep": "Wait{args}",
+    "wait": "Wait for background process{args}",
+    "xargs": "Execute with arguments{args}",
+    "tee": "Write to file and stdout{args}",
+    "tr": "Translate characters{args}",
+    "cut": "Extract fields{args}",
+    "jq": "Process JSON{args}",
+    "yq": "Process YAML{args}",
+    "rg": "Search files{args}",
+    "fd": "Find files{args}",
+    "bat": "Display file{args}",
+    "exa": "List files{args}",
+    "eza": "List files{args}",
+    "fdisk": "Disk partition tool{args}",
+    "mount": "Mount filesystem{args}",
+    "umount": "Unmount filesystem{args}",
+    "ln": "Create link{args}",
+    "readlink": "Show link target{args}",
+    "realpath": "Resolve path{args}",
+    "dirname": "Extract directory from path",
+    "basename": "Extract filename from path",
+    "test": "Test condition{args}",
+    "true": "Return success (0)",
+    "false": "Return failure (1)",
+    "yes": "Repeat output{args}",
+    "seq": "Generate sequence{args}",
+    "expr": "Evaluate expression{args}",
+    "bc": "Calculator:{args}",
+    "sudo": "Run as root:{args}",
+    "su": "Switch user{args}",
+    "man": "Show manual for{args}",
+    "info": "Show info for{args}",
+    "hermes": "Hermes CLI:{args}",
+    "eas": "Expo Application Services:{args}",
+    "gh": "GitHub CLI:{args}",
+    "kubectl": "Kubernetes:{args}",
+    "helm": "Kubernetes Helm:{args}",
+    "terraform": "Terraform:{args}",
+    "ansible": "Ansible:{args}",
+    "vagrant": "Vagrant:{args}",
+    "redis-cli": "Redis CLI:{args}",
+    "psql": "PostgreSQL:{args}",
+    "mysql": "MySQL:{args}",
+    "sqlite3": "SQLite:{args}",
+    "mongosh": "MongoDB:{args}",
+}
+
+
+def _summarize_single_command(cmd_text: str) -> str:
+    """Return a plain-English summary for a single command string."""
+    stripped = cmd_text.strip()
+    if not stripped:
+        return "(empty)"
+
+    is_sudo = False
+    if stripped.startswith("sudo "):
+        is_sudo = True
+        stripped = stripped[5:].strip()
+
+    if "=" in stripped and not stripped.startswith("-"):
+        eq_pos = stripped.index("=")
+        pre_eq = stripped[:eq_pos].strip()
+        post_eq = stripped[eq_pos + 1:].strip()
+        if not post_eq or post_eq.startswith("-") or " " not in pre_eq:
+            parts = stripped.split(None, 1)
+            if len(parts) == 1:
+                return f"Set variable {stripped}"
+
+    parts = stripped.split(None, 1)
+    base = parts[0]
+    args = parts[1] if len(parts) > 1 else ""
+
+    base_cmd = base.rsplit("/", 1)[-1] if "/" in base else base
+
+    if base_cmd.endswith(".py"):
+        base_cmd = "python"
+        args = stripped
+    elif base_cmd.endswith(".sh"):
+        base_cmd = "bash"
+        args = stripped
+
+    summary = _COMMAND_SUMMARIES.get(base_cmd.lower())
+    if summary:
+        if args:
+            result = summary.format(args=f" {args}").strip()
+        else:
+            result = summary.format(args="").strip()
+        result = result.rstrip(": ").strip()
+    else:
+        result = f"Execute: {stripped}"
+
+    if is_sudo and not result.startswith("Run as root"):
+        result = f"Run as root: {result}"
+
+    return result
+
+
+def decompose_command(command: str) -> list[dict]:
+    """Split a compound command into readable steps for approval display.
+
+    Takes a command string containing ``&&``, ``||``, ``;``, or ``|`` operators
+    and returns a list of dicts, each with ``step``, ``command``, and
+    ``summary`` keys. Does NOT attempt to decompose ``$()`` or backtick
+    substitution — those are flagged with a note instead.
+    """
+    normalized = _normalize_command_for_detection(command)
+
+    has_substitution = bool(re.search(r'\$\(', normalized) or '`' in normalized)
+    if has_substitution:
+        summary = _summarize_single_command(command)
+        summary += " (includes command substitution)"
+        return [{"step": 1, "command": command.strip(), "summary": summary}]
+
+    stripped = re.sub(r"""(?:'[^']*'|"[^"]*")""", '', normalized)
+
+    split_points = []
+    for match in re.finditer(r'&&|\|\||;', stripped):
+        split_points.append((match.start(), match.end(), match.group()))
+
+    if '|' in stripped:
+        temp = stripped.replace('||', '\x00\x00')
+        for match in re.finditer(r'\|', temp):
+            orig_pos = match.start()
+            split_points.append((orig_pos, orig_pos + 1, '|'))
+
+    if not split_points:
+        return [{"step": 1, "command": command.strip(),
+                 "summary": _summarize_single_command(command)}]
+
+    split_points.sort(key=lambda x: x[0])
+
+    segments = []
+    last_end = 0
+    for start, end, op in split_points:
+        if start > last_end:
+            seg = normalized[last_end:start].strip()
+            if seg:
+                segments.append((seg, op))
+        last_end = end
+
+    trailing = normalized[last_end:].strip()
+    if trailing:
+        segments.append((trailing, None))
+
+    steps = []
+    for i, (seg, op) in enumerate(segments):
+        summary = _summarize_single_command(seg)
+        step = {"step": i + 1, "command": seg, "summary": summary}
+        if op == '|':
+            step["pipe_to_next"] = True
+        steps.append(step)
+
+    return steps
+
+
+def _detect_chain_operators(command: str) -> tuple[bool, str | None]:
+    """Quick check if command contains chain operators (&&, ||, ;, |).
+    Returns (is_chained, separator_description).
+    """
+    normalized = _normalize_command_for_detection(command)
+    stripped = re.sub(r"""(?:'[^']*'|"[^"]*")""", '', normalized)
+    for sep, desc in [(r'&&', '"and-then" (&&)'), (r'\|\|', '"or-else" (||)'), (';', 'semicolon (;)'), ('|', 'pipe (|)')]:
+        if sep == '|':
+            temp = stripped.replace('||', '\x00\x00')
+            if '|' in temp:
+                return (True, desc)
+        elif re.search(sep, stripped):
+            return (True, desc)
+    return (False, None)
+
+
+# =========================================================================
 
 def _normalize_command_for_detection(command: str) -> str:
     """Normalize a command string before dangerous-pattern matching.
@@ -2240,6 +2496,18 @@ def check_all_command_guards(command: str, env_type: str,
     if _should_skip_container_guards(env_type, has_host_access=has_host_access):
         return {"approved": True, "message": None}
 
+    # Chain decomposition: detect chained commands (&&, ||, ;, |) and
+    # decompose into readable steps for the approval display. Does NOT
+    # block — falls through to normal security screening. The decomposition
+    # is attached to approval_data so the Discord adapter can show a
+    # step-by-step breakdown alongside the raw command.
+    _is_chained, _chain_desc = _detect_chain_operators(command)
+    _chain_decomposition = None
+    if _is_chained:
+        _chain_decomposition = decompose_command(command)
+        logger.info("Chained command decomposed (%d steps, command: %s)",
+                     len(_chain_decomposition), command[:200])
+
     # Hardline floor: unconditional block for catastrophic commands
     # (rm -rf /, mkfs, dd to raw device, shutdown/reboot, fork bomb,
     # kill -1). Applies BEFORE yolo / mode=off / cron approve-mode so
@@ -2411,9 +2679,15 @@ def check_all_command_guards(command: str, env_type: str,
         if not is_approved(session_key, pattern_key):
             warnings.append((pattern_key, description, False))
 
-    # Nothing to warn about
+    # Nothing to warn about — but if this is a chained command, still
+    # require approval so the user can review the decomposition.
     if not warnings:
-        return {"approved": True, "message": None}
+        if _chain_decomposition:
+            chain_key = "chained_command"
+            chain_desc = _chain_desc or "command chains multiple operations"
+            warnings.append((chain_key, chain_desc, False))
+        else:
+            return {"approved": True, "message": None}
 
     # --- Phase 2.5: Smart approval (auxiliary LLM risk assessment) ---
     # When approvals.mode=smart, ask the aux LLM before prompting the user.
@@ -2480,6 +2754,9 @@ def check_all_command_guards(command: str, env_type: str,
                 # "always" to session scope below, so the UI must not offer it.
                 "allow_permanent": not has_tirith,
             }
+            # Attach chain decomposition if the command was chained
+            if _chain_decomposition:
+                approval_data["decomposition"] = _chain_decomposition
             decision = _await_gateway_decision(
                 session_key, notify_cb, approval_data, surface="gateway"
             )
