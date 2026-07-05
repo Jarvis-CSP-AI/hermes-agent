@@ -10595,7 +10595,47 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         # Build the context prompt to inject
         context_prompt = build_session_context_prompt(context, redact_pii=_redact_pii)
-        
+
+        # Temporal context: inject current date/time when the user references
+        # relative dates so the agent has accurate temporal grounding.
+        _user_text_lower = (event.text or "").lower()
+        _TEMPORAL_KEYWORDS = (
+            "today", "tonight", "tomorrow", "this morning",
+            "this afternoon", "this evening", "this week",
+            "this weekend", "yesterday", "right now",
+        )
+        if any(kw in _user_text_lower for kw in _TEMPORAL_KEYWORDS):
+            try:
+                from hermes_time import now as _hermes_now
+                _now = _hermes_now()
+                context_prompt += (
+                    f"\n\n[Current date/time: "
+                    f"{_now.strftime('%A, %B %d, %Y %I:%M %p %Z')}]"
+                )
+            except Exception:
+                pass
+
+        # Session handoff state: inject continuity context from previous session.
+        try:
+            from pathlib import Path as _P
+            import re as _re
+            _handoff_dir = _hermes_home / "session_state"
+            if _handoff_dir.exists():
+                _safe_key = _re.sub(r"[^a-zA-Z0-9_\-:]", "_", session_key)
+                _handoff_file = _handoff_dir / f"{_safe_key}.md"
+                if _handoff_file.exists():
+                    _handoff_text = _handoff_file.read_text(encoding="utf-8").strip()
+                    if _handoff_text:
+                        _handoff_note = (
+                            "[System note: The following is a summary of your previous "
+                            "conversation in this channel. Use it to maintain continuity "
+                            "— do not acknowledge it explicitly.]\n\n"
+                            + _handoff_text
+                        )
+                        context_prompt = _handoff_note + "\n\n" + context_prompt
+        except Exception:
+            pass
+
         # If the previous session expired and was auto-reset, prepend a notice
         # so the agent knows this is a fresh conversation (not an intentional /reset).
         if _was_auto_reset:
