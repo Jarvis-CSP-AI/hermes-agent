@@ -45,7 +45,6 @@ def _load_pipeline():
     try:
         from jarvis_v2.channel_policy import ChannelPolicyResolver
         from jarvis_v2.config_loader import load_channel_policy
-        from jarvis_v2.graph_adapter import GraphMemoryAdapter
         from jarvis_v2.retrieval_pipeline import RetrievalPipeline
 
         # Find config examples relative to jarvis-core package.
@@ -70,7 +69,8 @@ def _load_pipeline():
 
         # Load channel policies
         policies = []
-        for fname in ("channel-policy.discord.private.json",
+        for fname in ("channel-policy.cron.private.json",
+                       "channel-policy.discord.private.json",
                        "channel-policy.discord.json",
                        "channel-policy.discord.public.json"):
             fpath = config_dir / fname
@@ -86,15 +86,22 @@ def _load_pipeline():
             return None
 
         resolver = ChannelPolicyResolver(policies)
-        graph_adapter = GraphMemoryAdapter(timeout_s=5.0)
+        adapter_name = os.environ.get("JARVIS_GRAPH_ADAPTER", "neo4j").strip().lower()
+        if adapter_name == "gbrain":
+            from jarvis_v2.gbrain_atom_adapter import GBrainAtomAdapter
+            graph_adapter = GBrainAtomAdapter(timeout_s=5.0)
+        else:
+            from jarvis_v2.graph_adapter import GraphMemoryAdapter
+            graph_adapter = GraphMemoryAdapter(timeout_s=5.0)
 
         _pipeline = RetrievalPipeline(
             resolver=resolver,
             graph_adapter=graph_adapter,
         )
         logger.info(
-            "graph_memory_bridge: pipeline initialized with %d channel policies",
+            "graph_memory_bridge: pipeline initialized with %d channel policies adapter=%s",
             len(policies),
+            adapter_name,
         )
         return _pipeline
 
@@ -189,8 +196,28 @@ def health_check() -> dict:
         return result
 
     result["bridge"] = "ok"
+    adapter_name = os.environ.get("JARVIS_GRAPH_ADAPTER", "neo4j").strip().lower()
+    result["adapter"] = adapter_name
 
-    # Check graph server health
+    if adapter_name == "gbrain":
+        try:
+            import json
+            import urllib.request
+            from jarvis_v2.gbrain_atom_adapter import DEFAULT_GBRAIN_HOME, DEFAULT_GBRAIN_SERVICE_URL
+
+            health_url = DEFAULT_GBRAIN_SERVICE_URL.rsplit("/", 2)[0] + "/health"
+            r = urllib.request.urlopen(health_url, timeout=3)
+            data = json.loads(r.read())
+            result["graph"] = "ok" if data.get("status") == "ok" else "degraded"
+            result["gbrain_home"] = str(DEFAULT_GBRAIN_HOME)
+            result["gbrain_service"] = health_url
+            return result
+        except Exception as exc:
+            result["graph"] = "unreachable"
+            result["error"] = str(exc)
+            return result
+
+    # Check graph server health (neo4j)
     try:
         import urllib.request
         import json
