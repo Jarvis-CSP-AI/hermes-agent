@@ -840,6 +840,36 @@ def run_conversation(
         # bytes are byte-stable across turns and upstream prompt caches
         # stay warm.
         effective_system = active_system_prompt or ""
+
+        # ── Graph memory retrieval (per-turn, ephemeral) ──
+        # Run the Jarvis v2 retrieval pipeline for this turn and inject
+        # relevant graph context as ephemeral prompt content. Per-turn because
+        # different user messages need different retrieved context.
+        # Graceful degradation: silent no-op if jarvis-core isn't installed
+        # or the graph memory server is down.
+        try:
+            from agent.graph_memory_bridge import build_graph_context
+            _graph_ctx = build_graph_context(
+                user_message=original_user_message,
+                platform=agent.platform or "cli",
+                channel_id=getattr(agent, "_chat_id", "") or "",
+                channel_name=getattr(agent, "_chat_name", "") or "",
+                channel_type=getattr(agent, "_chat_type", "") or "dm",
+                user_id=getattr(agent, "_user_id", "") or "",
+                user_name=getattr(agent, "_user_name", "") or "",
+                session_id=agent.session_id or "",
+                thread_id=getattr(agent, "_thread_id", "") or "",
+            )
+            if _graph_ctx:
+                if agent.ephemeral_system_prompt:
+                    agent.ephemeral_system_prompt = (
+                        agent.ephemeral_system_prompt + "\n\n" + _graph_ctx
+                    )
+                else:
+                    agent.ephemeral_system_prompt = _graph_ctx
+        except Exception as exc:
+            pass
+
         if agent.ephemeral_system_prompt:
             effective_system = (effective_system + "\n\n" + agent.ephemeral_system_prompt).strip()
         if effective_system:
